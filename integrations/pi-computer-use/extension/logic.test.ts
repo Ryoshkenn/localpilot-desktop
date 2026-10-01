@@ -63,7 +63,19 @@ test("observation formatting is compact", () => {
 	assert.match(text, /App: Safari - window "Example"/);
 	assert.match(text, /\[1\] textfield "Address and Search" \(empty\)/);
 	assert.match(text, /\[5\] textfield "Email" = "a@b.c" \(focused\)/);
-	assert.match(text, /Text on screen: Example Domain/);
+	assert.match(text, /Text on screen:\nExample Domain/);
+});
+
+test("headings get their own lines and scroll position is shown", () => {
+	const text = formatObservation({
+		app: "Safari",
+		elements: [element(0, "link", "More")],
+		text: "# Example Domain | This domain is for examples. | More",
+		scroll: 0.4,
+	});
+	assert.match(text, /Scroll: 40% down \(more below\)/);
+	assert.match(text, /Text on screen:\n# Example Domain\nThis domain is for examples\./);
+	assert.doesNotMatch(text, /\| More/);
 });
 
 test("change descriptions call out no-ops", () => {

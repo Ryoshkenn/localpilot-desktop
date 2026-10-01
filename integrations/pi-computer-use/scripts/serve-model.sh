@@ -22,7 +22,7 @@ fi
 # cache can only resume from checkpoints; take them often.
 export APC_ENABLED=1
 export APC_DISK_ENABLED="${APC_DISK_ENABLED:-0}"
-export APC_CHECKPOINT_INTERVAL_TOKENS="${APC_CHECKPOINT_INTERVAL_TOKENS:-256}"
-export APC_EXACT_CACHE_ENTRIES="${APC_EXACT_CACHE_ENTRIES:-8}"
+export APC_CHECKPOINT_INTERVAL_TOKENS="${APC_CHECKPOINT_INTERVAL_TOKENS:-128}"
+export APC_EXACT_CACHE_ENTRIES="${APC_EXACT_CACHE_ENTRIES:-32}"
 
 exec "$VENV/bin/python" -m mlx_vlm.server --host 127.0.0.1 --port "$PORT" --model "$MODEL" ${MLX_VLM_EXTRA_ARGS:-}

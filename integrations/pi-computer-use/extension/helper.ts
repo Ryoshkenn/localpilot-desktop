@@ -29,6 +29,8 @@ export interface Observation {
 	text: string;
 	truncated?: boolean;
 	focusedId?: number;
+	/** Vertical scroll position of the main content, 0 = top, 1 = bottom. */
+	scroll?: number;
 	windowFrame?: { x: number; y: number; w: number; h: number };
 	note?: string;
 }

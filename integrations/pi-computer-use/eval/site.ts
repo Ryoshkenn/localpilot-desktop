@@ -74,6 +74,14 @@ export function startSite(port = 8765): Promise<{ server: Server; log: SiteLog; 
 				),
 			);
 		}
+		if (url.pathname === "/news") {
+			return send(
+				page(
+					"Daily Bulletin",
+					`<nav><a href="/">Home</a> · <a href="/shop">Shop</a></nav><p>Updated this morning. Read time 2 minutes.</p><h1>Harbor Bridge Reopens After Repairs</h1><p>The bridge reopened to traffic on Tuesday after three months of work.</p><h2>Traffic changes</h2><p>Two lanes remain closed at night.</p>`,
+				),
+			);
+		}
 		if (url.pathname === "/account") {
 			return send(
 				page(

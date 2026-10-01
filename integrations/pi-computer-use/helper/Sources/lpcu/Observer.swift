@@ -11,6 +11,7 @@ struct ObservedElement {
     let handle: AXUIElement
     let focused: Bool
     let pressable: Bool
+    var inWeb = false
 
     var center: CGPoint { CGPoint(x: frame.midX, y: frame.midY) }
 
@@ -51,7 +52,8 @@ final class Observer {
         // The element may have moved or disappeared since the observation.
         if let frame = AX.frame(element.handle), frame.width > 0 {
             return ObservedElement(id: element.id, role: element.role, label: element.label, value: element.value,
-                                   frame: frame, handle: element.handle, focused: element.focused, pressable: element.pressable)
+                                   frame: frame, handle: element.handle, focused: element.focused, pressable: element.pressable,
+                                   inWeb: element.inWeb)
         }
         return nil
     }
@@ -92,6 +94,9 @@ final class Observer {
         var webArea: AXUIElement?
         var url: String?
         var maxElements = 150
+        /// Set while walking page content, so it can be listed before browser chrome.
+        var inWeb = false
+        var skip: AXUIElement?
     }
 
     func observe(maxElements: Int) throws -> [String: Any] {
@@ -118,6 +123,14 @@ final class Observer {
             visit(menu, depth: 0, insideElement: false, into: &walk)
         }
         if let window {
+            // Page content first: it's what tasks are about, and browser
+            // chrome (tab strips, sidebars) can otherwise use up the budget.
+            if let webArea = findWebArea() {
+                walk.inWeb = true
+                visit(webArea, depth: 0, insideElement: false, into: &walk)
+                walk.inWeb = false
+                walk.skip = webArea
+            }
             visit(window, depth: 0, insideElement: false, into: &walk)
         } else {
             visit(appElement, depth: 0, insideElement: false, into: &walk)
@@ -134,6 +147,7 @@ final class Observer {
             "truncated": walk.elements.count >= walk.maxElements,
         ]
         if let url = walk.url { result["url"] = url }
+        if let scroll = Self.scrollPosition(webArea: walk.webArea, window: window) { result["scroll"] = scroll }
         if let frame = window.flatMap(AX.frame) {
             result["windowFrame"] = ["x": frame.minX, "y": frame.minY, "w": frame.width, "h": frame.height]
         }
@@ -141,10 +155,20 @@ final class Observer {
         return result
     }
 
-    private func openMenus(_ appElement: AXUIElement) -> [AXUIElement] {
+    func openMenus(_ appElement: AXUIElement) -> [AXUIElement] {
         var menus: [AXUIElement] = []
         for child in AX.elements(appElement, kAXChildrenAttribute) ?? [] where AX.string(child, kAXRoleAttribute) == "AXMenu" {
             menus.append(child)
+        }
+        // Web pop-up menus (Safari <select>) open in their own small window.
+        for window in AX.elements(appElement, kAXWindowsAttribute) ?? []
+        where AX.string(window, kAXSubroleAttribute) != "AXStandardWindow" {
+            var queue: [(AXUIElement, Int)] = [(window, 0)]
+            while !queue.isEmpty {
+                let (node, depth) = queue.removeFirst()
+                if AX.string(node, kAXRoleAttribute) == "AXMenu" { menus.append(node); continue }
+                if depth < 4 { queue += (AX.elements(node, kAXChildrenAttribute) ?? []).map { ($0, depth + 1) } }
+            }
         }
         if let menuBar = AX.element(appElement, kAXMenuBarAttribute) {
             for item in AX.elements(menuBar, kAXChildrenAttribute) ?? [] where AX.bool(item, kAXSelectedAttribute) == true {
@@ -159,6 +183,7 @@ final class Observer {
     private func visit(_ node: AXUIElement, depth: Int, insideElement: Bool, into walk: inout Walk) {
         guard depth <= 60, walk.elements.count < walk.maxElements, walk.visited < 8000 else { return }
         walk.visited += 1
+        if let skip = walk.skip, CFEqual(skip, node) { return }
 
         let rawRole = AX.string(node, kAXRoleAttribute) ?? ""
         let subrole = AX.string(node, kAXSubroleAttribute)
@@ -187,21 +212,34 @@ final class Observer {
                 let label = Self.label(of: node, role: role)
                 // Unlabeled cells, images, and thin splitters add noise without
                 // telling the model anything.
-                let noise = label.isEmpty && (["cell", "image", "row"].contains(role) || min(frame.width, frame.height) < 8)
+                let keepsUnlabeled = Self.textRoles.contains(role)
+                    || ["checkbox", "radio", "popup", "slider", "stepper", "switch", "toggle", "combobox"].contains(role)
+                let noise = label.isEmpty && (!keepsUnlabeled || min(frame.width, frame.height) < 8)
                 if !noise {
                     let id = walk.elements.count
                     let focused = walk.focused.map { CFEqual($0, node) } ?? false
                     walk.elements.append(ObservedElement(
                         id: id, role: role, label: label, value: Self.value(of: node, role: role),
                         frame: frame, handle: node, focused: focused,
-                        pressable: Self.pressRoles.contains(role)
+                        pressable: Self.pressRoles.contains(role), inWeb: walk.inWeb
                     ))
                     isElement = true
                 }
             }
         }
 
-        if !insideElement, !isElement, rawRole == "AXStaticText" || rawRole == "AXHeading", walk.textLength < 2500 {
+        var isHeading = false
+        if !insideElement, !isElement, rawRole == "AXHeading", walk.textLength < 2500 {
+            let text = Self.clean(AX.string(node, kAXTitleAttribute)).isEmpty
+                ? Self.descendantText(node, depth: 0, budget: 120) : Self.clean(AX.string(node, kAXTitleAttribute))
+            if !text.isEmpty {
+                // Mark headings so the model can tell titles from body text.
+                walk.text.append("# " + text)
+                walk.textLength += text.count + 2
+                isHeading = true
+            }
+        }
+        if !insideElement, !isElement, rawRole == "AXStaticText", walk.textLength < 2500 {
             if let text = (AX.string(node, kAXValueAttribute) ?? AX.string(node, kAXTitleAttribute))?
                 .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
                walk.text.last != text {
@@ -212,7 +250,7 @@ final class Observer {
         }
 
         // Rows and links already carry their text as the label.
-        let childrenInside = insideElement || (isElement && ["link", "button", "row", "menuitem", "tab"].contains(walk.elements.last?.role ?? ""))
+        let childrenInside = insideElement || isHeading || (isElement && ["link", "button", "row", "menuitem", "tab"].contains(walk.elements.last?.role ?? ""))
         // Pop-up and menu-button children are their (closed) menus.
         if rawRole == "AXPopUpButton" || rawRole == "AXMenuButton" { return }
         guard let children = AX.elements(node, kAXChildrenAttribute) else { return }
@@ -220,6 +258,33 @@ final class Observer {
             if walk.elements.count >= walk.maxElements || walk.visited >= 8000 { return }
             visit(child, depth: depth + 1, insideElement: childrenInside, into: &walk)
         }
+    }
+
+    /// How far the main content is scrolled, 0 (top) to 1 (bottom), from the
+    /// vertical scroll bar of the page or the window's largest scroll area.
+    private static func scrollPosition(webArea: AXUIElement?, window: AXUIElement?) -> Double? {
+        var scrollArea: AXUIElement?
+        if let webArea, let parent = AX.element(webArea, kAXParentAttribute), AX.string(parent, kAXRoleAttribute) == "AXScrollArea" {
+            scrollArea = parent
+        } else if let window {
+            var best: (AXUIElement, CGFloat)?
+            var queue: [(AXUIElement, Int)] = [(window, 0)]
+            var visited = 0
+            while !queue.isEmpty, visited < 400 {
+                let (node, depth) = queue.removeFirst()
+                visited += 1
+                if AX.string(node, kAXRoleAttribute) == "AXScrollArea", let frame = AX.frame(node) {
+                    let area = frame.width * frame.height
+                    if area > (best?.1 ?? 0) { best = (node, area) }
+                    continue
+                }
+                if depth < 8 { queue += (AX.elements(node, kAXChildrenAttribute) ?? []).map { ($0, depth + 1) } }
+            }
+            scrollArea = best?.0
+        }
+        guard let scrollArea, let bar = AX.element(scrollArea, kAXVerticalScrollBarAttribute),
+              let value = AX.number(bar, kAXValueAttribute) else { return nil }
+        return (value * 100).rounded() / 100
     }
 
     private static func visibleBounds(window: AXUIElement?) -> CGRect {
@@ -345,6 +410,41 @@ final class Observer {
         return AX.bool(element.handle, kAXFocusedAttribute) == true
     }
 
+    /// Choose an option in a pop-up menu: open it, then press the matching item.
+    func select(_ id: Int, option: String) async -> String? {
+        guard let element = registry[id] else { return nil }
+        AXUIElementPerformAction(element.handle, kAXPressAction as CFString)
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        var menus = (AX.elements(element.handle, kAXChildrenAttribute) ?? []).filter { AX.string($0, kAXRoleAttribute) == "AXMenu" }
+        if menus.isEmpty, let app = target.application {
+            menus = openMenus(AXUIElementCreateApplication(app.processIdentifier))
+        }
+        let wanted = option.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        var best: (AXUIElement, String, Int)?
+        for menu in menus {
+            for item in AX.elements(menu, kAXChildrenAttribute) ?? [] {
+                let title = (AX.string(item, kAXTitleAttribute) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let lower = title.lowercased()
+                let score = lower == wanted ? 3 : lower.hasPrefix(wanted) ? 2 : lower.contains(wanted) && !wanted.isEmpty ? 1 : 0
+                if score > (best?.2 ?? 0) { best = (item, title, score) }
+            }
+        }
+        guard let (item, title, _) = best else {
+            // Close the menu again so the screen isn't left in a modal state.
+            if !menus.isEmpty { try? Input().press(combo: "escape") }
+            return nil
+        }
+        AXUIElementPerformAction(item, kAXPressAction as CFString)
+        return title
+    }
+
+    /// Option titles of a pop-up, for error messages.
+    func options(of id: Int) -> [String] {
+        guard let element = registry[id] else { return [] }
+        let menus = (AX.elements(element.handle, kAXChildrenAttribute) ?? []).filter { AX.string($0, kAXRoleAttribute) == "AXMenu" }
+        return menus.flatMap { AX.elements($0, kAXChildrenAttribute) ?? [] }.compactMap { AX.string($0, kAXTitleAttribute) }.filter { !$0.isEmpty }
+    }
+
     /// Wait for a web page in the target window to stop loading.
     func waitForPageLoad(timeout: TimeInterval) async {
         guard let webArea = findWebArea() else { return }
@@ -357,15 +457,15 @@ final class Observer {
         }
     }
 
-    private func findWebArea() -> AXUIElement? {
+    func findWebArea() -> AXUIElement? {
         guard let window = target.focusedWindow() else { return nil }
         var queue: [(AXUIElement, Int)] = [(window, 0)]
         var visited = 0
-        while !queue.isEmpty, visited < 300 {
+        while !queue.isEmpty, visited < 600 {
             let (node, depth) = queue.removeFirst()
             visited += 1
             if AX.string(node, kAXRoleAttribute) == "AXWebArea" { return node }
-            guard depth < 10 else { continue }
+            guard depth < 14 else { continue }
             for child in AX.elements(node, kAXChildrenAttribute) ?? [] { queue.append((child, depth + 1)) }
         }
         return nil

@@ -39,7 +39,7 @@ import {
 } from "./policy.ts";
 import { computerSystemPrompt } from "./prompt.ts";
 
-export const TOOL_NAMES = ["look", "click", "type_text", "press_key", "scroll", "open_app", "open_url"];
+export const TOOL_NAMES = ["look", "click", "type_text", "select_option", "press_key", "scroll", "open_app", "open_url"];
 
 interface Config {
 	maxElements: number;
@@ -76,7 +76,12 @@ function loadConfig(): Config {
 	return config;
 }
 
-type ToolResult = { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[]; details: unknown };
+type ToolResult = {
+	content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+	details: unknown;
+	isError?: boolean;
+	terminate?: boolean;
+};
 
 export default function computerUse(pi: ExtensionAPI) {
 	const config = loadConfig();
@@ -89,6 +94,7 @@ export default function computerUse(pi: ExtensionAPI) {
 	let currentTask = "";
 	/** Signatures of recent actions and whether each changed the screen. */
 	let recentActions: { signature: string; changed: boolean }[] = [];
+	let refusals = 0;
 
 	// MARK: Helpers
 
@@ -128,14 +134,29 @@ export default function computerUse(pi: ExtensionAPI) {
 		return { content: [{ type: "text", text }], details: { outcome, change, app: after.app, window: after.window } };
 	}
 
-	/** Refuse an exact repeat of an action that already failed to change anything twice. */
-	function guardRepeat(signature: string): void {
+	/**
+	 * Refuse an exact repeat of an action that already failed to change
+	 * anything twice. After three refusals the model is stuck, so the run
+	 * stops rather than burning minutes.
+	 */
+	function guardRepeat(signature: string): ToolResult | undefined {
 		const stuck = recentActions.slice(-3).filter((action) => action.signature === signature && !action.changed).length;
-		if (stuck >= 2) {
-			throw new Error(
-				`Refusing to repeat "${signature}" a third time: it did not change the screen. Try a different element, a keyboard shortcut, or scrolling.\n${SCREEN_MARKER}\n${lastObservation ? formatObservation(lastObservation, format) : ""}`,
-			);
+		if (stuck < 2) return undefined;
+		refusals++;
+		const screen = lastObservation ? formatObservation(lastObservation, format) : "";
+		if (refusals >= 3) {
+			return {
+				content: [{ type: "text", text: "Stopped: the agent kept repeating actions that did nothing. Tell the user what you tried and where you got stuck." }],
+				details: { outcome: "stuck" },
+				isError: true,
+				terminate: true,
+			};
 		}
+		return {
+			content: [{ type: "text", text: `Refused: "${signature}" already ran twice without changing the screen. Choose a different element or action.\n${SCREEN_MARKER}\n${screen}` }],
+			details: { outcome: "refused" },
+			isError: true,
+		};
 	}
 
 	function notFound(target: string, candidates: HelperElement[], screen: Observation): Error {
@@ -263,7 +284,8 @@ export default function computerUse(pi: ExtensionAPI) {
 			const count = params.double ? 2 : 1;
 			const button = params.right ? "right" : "left";
 			const signature = `click ${params.target}${params.double ? " double" : ""}${params.right ? " right" : ""}`;
-			guardRepeat(signature);
+			const refused = guardRepeat(signature);
+			if (refused) return refused;
 			let screen = await currentScreen();
 			let resolution = resolveTarget(params.target, screen.elements);
 			if (!resolution.element && !looksLikeId(params.target)) {
@@ -276,7 +298,17 @@ export default function computerUse(pi: ExtensionAPI) {
 				const element = resolution.element;
 				await approve(ctx, classifyClick(element), `Click [${element.id}] ${element.role} "${element.label}"`);
 				try {
-					await helper.request("click", { id: element.id, count, button });
+					const clicked = await helper.request<{ method: string }>("click", { id: element.id, count, button });
+					if (clicked.method === "ax-press") {
+						// Some apps accept an accessibility press and ignore it; use a real click then.
+						const after = await observe();
+						if (screenSignature(after) === screenSignature(screen)) {
+							const again = resolveTarget(String(element.id), after.elements).element;
+							if (again && again.label === element.label) {
+								await helper.request("click", { id: again.id, count, button, mode: "mouse" });
+							}
+						}
+					}
 				} catch (error) {
 					if (!String(error).includes("not on screen")) throw error;
 					// Stale id: find the same element in a fresh observation.
@@ -339,8 +371,17 @@ export default function computerUse(pi: ExtensionAPI) {
 			} else {
 				element = screen.elements.find((candidate) => candidate.focused);
 			}
+			if (element && params.target !== undefined && (element.role === "popup" || element.role === "menubutton")) {
+				return selectOption(element, params.text, screen);
+			}
+			if (element && params.target !== undefined && element.value === params.text && !params.submit) {
+				// Re-typing what is already there tempts small models into loops.
+				const text = `[${element.id}] ${element.role} "${element.label}" already contains "${params.text}". Go on to the next step.\n${SCREEN_MARKER}\n${formatObservation(screen, format)}`;
+				return { content: [{ type: "text", text }], details: { outcome: "already-set" } };
+			}
 			const signature = `type ${params.target ?? ""} ${params.text}`;
-			guardRepeat(signature);
+			const refused = guardRepeat(signature);
+			if (refused) return refused;
 			await approve(ctx, classifyType(element, params.text, currentTask), `Type "${params.text}"${element ? ` into [${element.id}] "${element.label}"` : ""}`);
 
 			const targeted = params.target !== undefined && element !== undefined;
@@ -357,6 +398,42 @@ export default function computerUse(pi: ExtensionAPI) {
 		},
 	});
 
+	async function selectOption(element: HelperElement, option: string, screen: Observation): Promise<ToolResult> {
+		if (element.value && element.value.toLowerCase() === option.toLowerCase()) {
+			const text = `[${element.id}] already shows "${element.value}". Go on to the next step.\n${SCREEN_MARKER}\n${formatObservation(screen, format)}`;
+			return { content: [{ type: "text", text }], details: { outcome: "already-set" } };
+		}
+		const result = await helper.request<{ selected: string }>("select", { id: element.id, option });
+		return finish(`select ${element.id} ${option}`, `Chose "${result.selected}" in [${element.id}] ${element.role} "${element.label}".`, screen);
+	}
+
+	pi.registerTool({
+		name: "select_option",
+		label: "Select option",
+		description: 'Choose an option in a drop-down menu (popup). target is the popup\'s number or label; option is the text of the choice, e.g. "Green".',
+		promptSnippet: "select_option: choose an item in a drop-down",
+		parameters: Type.Object({
+			target: Type.String({ description: 'Popup number like "4", or its label' }),
+			option: Type.String({ description: "The option to choose" }),
+		}),
+		defaultActive: config.alwaysOn,
+		executionMode: "sequential",
+		prepareArguments: (args: any) => ({
+			target: asString(pick(args, ...targetKeys, "menu", "dropdown", "popup")) ?? "",
+			option: asString(pick(args, "option", "value", "choice", "text", "item")) ?? "",
+		}),
+		async execute(_id, params) {
+			let screen = await currentScreen();
+			let resolution = resolveTarget(params.target, screen.elements);
+			if (!resolution.element) {
+				screen = await observe();
+				resolution = resolveTarget(params.target, screen.elements);
+			}
+			if (!resolution.element) throw notFound(params.target, resolution.candidates, screen);
+			return selectOption(resolution.element, params.option, screen);
+		},
+	});
+
 	pi.registerTool({
 		name: "press_key",
 		label: "Press key",
@@ -369,7 +446,8 @@ export default function computerUse(pi: ExtensionAPI) {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const keys = normalizeKeys(params.keys);
 			const signature = `key ${keys}`;
-			guardRepeat(signature);
+			const refused = guardRepeat(signature);
+			if (refused) return refused;
 			await approve(ctx, classifyKeys(keys), `Press ${keys}`);
 			const before = await currentScreen();
 			await helper.request("key", { keys });
@@ -439,7 +517,9 @@ export default function computerUse(pi: ExtensionAPI) {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			await approve(ctx, classifyURL(params.url), `Open ${params.url}`);
 			const before = lastObservation;
-			await helper.request("open_url", { url: params.url, ...(params.app ? { app: params.app } : {}) }, 45_000);
+			// Honor a browser the user named in the task even if the model forgot to pass it.
+			const app = params.app ?? /\b(Safari|Chrome|Arc|Firefox|Brave|Edge)\b/i.exec(currentTask)?.[1];
+			await helper.request("open_url", { url: params.url, ...(app ? { app } : {}) }, 45_000);
 			return finish(`url ${params.url}`, `Opened ${params.url}.`, before);
 		},
 	});
@@ -509,6 +589,7 @@ export default function computerUse(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => {
 		currentTask = event.prompt;
 		recentActions = [];
+		refusals = 0;
 		if (!computerMode) return;
 		// Start every task with a fresh look so the model needn't spend a turn on it.
 		let screenText = "";

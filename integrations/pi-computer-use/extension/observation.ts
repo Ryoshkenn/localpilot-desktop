@@ -20,6 +20,7 @@ export function formatObservation(observation: Observation, options: FormatOptio
 	const title = observation.window ? ` - window "${observation.window}"` : "";
 	lines.push(`App: ${observation.app}${title}`);
 	if (observation.url) lines.push(`URL: ${observation.url}`);
+	if (observation.scroll !== undefined) lines.push(`Scroll: ${describeScroll(observation.scroll)}`);
 
 	const elements = observation.elements;
 	if (elements.length === 0) {
@@ -32,12 +33,28 @@ export function formatObservation(observation: Observation, options: FormatOptio
 		else if (observation.truncated) lines.push("(more elements exist; scroll to see them)");
 	}
 
-	const text = observation.text.trim();
+	// Labels already listed as elements needn't be repeated as text.
+	const labels = new Set(elements.map((element) => element.label.trim().toLowerCase()).filter(Boolean));
+	const text = observation.text
+		.split(" | ")
+		.filter((segment) => !labels.has(segment.trim().toLowerCase()))
+		.join(" | ")
+		.trim();
 	if (text) {
 		const bounded = text.length > options.maxTextChars ? `${text.slice(0, options.maxTextChars)}...` : text;
-		lines.push(`Text on screen: ${bounded}`);
+		// Headings on their own lines, so titles stand out from body text.
+		const rendered = bounded.replace(/(?:^| \| )# ([^|]+)/g, (_match, heading: string) => `\n# ${heading.trim()}\n`).replace(/\n\s*\| /g, "\n").trim();
+		lines.push(`Text on screen:\n${rendered}`);
+	} else {
+		lines.push("Text on screen: (none)");
 	}
 	return lines.join("\n");
+}
+
+export function describeScroll(position: number): string {
+	if (position <= 0.01) return "at the top (more below)";
+	if (position >= 0.99) return "at the bottom";
+	return `${Math.round(position * 100)}% down (more below)`;
 }
 
 export function formatElement(element: HelperElement): string {
@@ -80,6 +97,7 @@ export function screenSignature(observation: Observation): string {
 		observation.app,
 		observation.window,
 		observation.url,
+		String(observation.scroll ?? ""),
 		observation.text.slice(0, 2000),
 		...observation.elements.map(signature),
 	].join("\n");

@@ -22,35 +22,49 @@ final class Input {
         }
     }
 
-    func type(_ text: String) {
+    func type(_ text: String, delay: useconds_t = 6_000) {
         // Newlines become Return presses so multi-line text works in editors.
         let lines = text.components(separatedBy: "\n")
         for (index, line) in lines.enumerated() {
             if index > 0 { try? press(combo: "return") }
-            typeChunks(line)
+            typeChunks(line, delay: delay)
         }
     }
 
-    private func typeChunks(_ text: String) {
-        var chunk: [UniChar] = []
-        func flush() {
-            guard !chunk.isEmpty else { return }
-            if let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-               let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) {
-                down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-                up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
-            }
-            chunk.removeAll()
-            usleep(12_000)
-        }
+    /// Type text one character at a time. Each event carries the real key
+    /// code (some web views ignore events that only carry a Unicode string)
+    /// plus the Unicode string, so the right character arrives even on
+    /// non-US layouts.
+    private func typeChunks(_ text: String, delay: useconds_t) {
         for character in text {
             let units = Array(String(character).utf16)
-            if chunk.count + units.count > 16 { flush() }
-            chunk.append(contentsOf: units)
+            let (code, shift) = Self.keyStroke(for: character) ?? (0, false)
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { continue }
+            down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+            up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+            if shift {
+                down.flags = .maskShift
+                up.flags = .maskShift
+            }
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            usleep(delay)
         }
-        flush()
+    }
+
+    private static let shifted: [Character: Character] = [
+        "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+        "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\", ":": ";", "\"": "'", "<": ",", ">": ".", "?": "/", "~": "`",
+    ]
+
+    static func keyStroke(for character: Character) -> (CGKeyCode, Bool)? {
+        if character == " " { return (49, false) }
+        if character == "\t" { return (48, false) }
+        if let base = shifted[character], let code = keyCode(for: String(base)) { return (code, true) }
+        let lower = String(character).lowercased()
+        guard lower.count == 1, let code = keyCode(for: lower) else { return nil }
+        return (code, character.isUppercase)
     }
 
     func press(combo: String) throws {

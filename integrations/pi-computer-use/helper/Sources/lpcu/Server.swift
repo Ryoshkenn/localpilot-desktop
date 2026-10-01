@@ -103,6 +103,36 @@ final class Server {
             return ["ok": true]
         case "tree":
             return ["tree": observer.dumpTree(maxDepth: args.int("depth") ?? 25, maxNodes: args.int("maxNodes") ?? 1500)]
+        case "select":
+            guard let id = args.int("id"), let option = args.string("option") else { throw HelperError("select needs id and option") }
+            guard let element = observer.element(id) else { throw HelperError("element \(id) is not on screen any more; observe again") }
+            try activateTarget()
+            indicator.update(visible: true, label: "choose \(option)", point: element.center)
+            // Native pop-ups expose their menu: open it and press the item.
+            if !element.inWeb, let chosen = await observer.select(id, option: option) {
+                await settle(args, defaultMs: 300)
+                return ["selected": chosen]
+            }
+            // Web <select>: focus without opening it and type to select.
+            AXUIElementSetAttributeValue(element.handle, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            try await Task.sleep(nanoseconds: 150_000_000)
+            input.type(option)
+            try await Task.sleep(nanoseconds: 400_000_000)
+            let value = AX.string(element.handle, kAXValueAttribute) ?? ""
+            if value.lowercased().hasPrefix(option.lowercased()) || value.lowercased() == option.lowercased() {
+                return ["selected": value, "method": "type-ahead"]
+            }
+            // Last resort: open it with a real click, type, and confirm.
+            input.click(at: element.center, count: 1, button: "left")
+            try await Task.sleep(nanoseconds: 350_000_000)
+            input.type(option)
+            try input.press(combo: "return")
+            await settle(args, defaultMs: 300)
+            let final = AX.string(element.handle, kAXValueAttribute) ?? ""
+            if !final.lowercased().contains(option.lowercased()) {
+                throw HelperError("could not choose \"\(option)\"; the pop-up shows \"\(final)\"")
+            }
+            return ["selected": final, "method": "menu-keys"]
         case "release":
             target.release()
             indicator.update(visible: false, label: nil, point: nil)
@@ -130,7 +160,11 @@ final class Server {
             }
             indicator.update(visible: true, label: "click \(element.summary)", point: element.center)
             var method = "mouse"
-            if count == 1, button == "left", observer.press(id) {
+            // Chromium accepts AXPress on web links but often ignores it, so
+            // page content there gets a real click.
+            let chromiumWeb = element.inWeb && target.application.map(Observer.isChromium) == true
+            let forceMouse = args.string("mode") == "mouse" || chromiumWeb
+            if count == 1, button == "left", !forceMouse, observer.press(id) {
                 method = "ax-press"
             } else {
                 input.click(at: element.center, count: count, button: button)
@@ -163,7 +197,8 @@ final class Server {
                 input.click(at: element.center, count: 1, button: "left")
                 focusedVia = "click"
             }
-            try await Task.sleep(nanoseconds: 120_000_000)
+            // Web fields open autofill suggestions on focus; let that settle.
+            try await Task.sleep(nanoseconds: element.inWeb ? 300_000_000 : 120_000_000)
         }
         if args.bool("replace") ?? (args.int("id") != nil) {
             try input.press(combo: "cmd+a")
@@ -175,6 +210,24 @@ final class Server {
             method = "ax-insert"
         } else {
             input.type(text)
+        }
+        // Check a replaced field really holds the text: autofill pop-ups and
+        // slow pages can swallow the first keystrokes.
+        if let id = args.int("id"), args.bool("replace") ?? true, !text.isEmpty, !text.contains("\n"),
+           let element = observer.element(id), element.role != "password" {
+            try await Task.sleep(nanoseconds: 150_000_000)
+            if !(AX.string(element.handle, kAXValueAttribute) ?? "").contains(text) {
+                try input.press(combo: "cmd+a")
+                try input.press(combo: "delete")
+                try await Task.sleep(nanoseconds: 250_000_000)
+                input.type(text, delay: 40_000)
+                method = "keys-retry"
+                try await Task.sleep(nanoseconds: 150_000_000)
+                if !(AX.string(element.handle, kAXValueAttribute) ?? "").contains(text),
+                   AXUIElementSetAttributeValue(element.handle, kAXValueAttribute as CFString, text as CFString) == .success {
+                    method = "ax-value"
+                }
+            }
         }
         if args.bool("submit") ?? false {
             try await Task.sleep(nanoseconds: 80_000_000)
