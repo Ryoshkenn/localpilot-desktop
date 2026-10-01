@@ -152,6 +152,7 @@ final class Observer {
             result["windowFrame"] = ["x": frame.minX, "y": frame.minY, "w": frame.width, "h": frame.height]
         }
         if let focused = walk.elements.first(where: \.focused) { result["focusedId"] = focused.id }
+        if window == nil { result["noWindow"] = true }
         return result
     }
 

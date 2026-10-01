@@ -14,6 +14,7 @@ enum Screenshot {
         let ownPID = ProcessInfo.processInfo.processIdentifier
 
         var filter: SCContentFilter
+        var captured = "screen"
         var originPoints = CGPoint.zero
         var sizePoints: CGSize
 
@@ -21,6 +22,7 @@ enum Screenshot {
            let windowID = frontWindowID(of: app.processIdentifier),
            let window = content.windows.first(where: { $0.windowID == windowID }) {
             filter = SCContentFilter(desktopIndependentWindow: window)
+            captured = "window"
             originPoints = window.frame.origin
             sizePoints = window.frame.size
         } else {
@@ -57,7 +59,7 @@ enum Screenshot {
             "originY": originPoints.y,
             "pointWidth": sizePoints.width,
             "pointHeight": sizePoints.height,
-            "area": area,
+            "area": captured,
         ]
     }
 

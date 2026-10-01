@@ -330,7 +330,10 @@ export default function computerUse(pi: ExtensionAPI) {
 			// Not in the accessibility tree: find it visually.
 			const ask = visionAsk(ctx);
 			if (!ask) throw notFound(params.target, resolution.candidates, screen);
+			if (screen.noWindow) throw notFound(params.target, [], screen);
 			const shot = await helper.request<ScreenshotResult>("screenshot", { area: "window", maxWidth: 1280 });
+			// Never ground on a whole-screen capture: the click could land in another app.
+			if (shot.area !== "window") throw notFound(params.target, resolution.candidates, screen);
 			const point = await groundTarget(params.target, shot, ask, signal);
 			if (!point) throw notFound(params.target, resolution.candidates, screen);
 			await approve(ctx, classifyClick(undefined, params.target), `Click "${params.target}" at (${point.x}, ${point.y})`);
@@ -477,6 +480,15 @@ export default function computerUse(pi: ExtensionAPI) {
 			const screen = await currentScreen();
 			const element = params.target ? resolveTarget(params.target, screen.elements).element : undefined;
 			const signature = `scroll ${params.direction} ${params.target ?? ""}`;
+			const refused = guardRepeat(signature);
+			if (refused) return refused;
+			const edge = params.direction === "down" ? screen.scroll !== undefined && screen.scroll >= 0.99
+				: params.direction === "up" ? screen.scroll !== undefined && screen.scroll <= 0.01 : false;
+			if (edge) {
+				recentActions.push({ signature, changed: false });
+				const text = `Already at the ${params.direction === "down" ? "bottom" : "top"}; scrolling further does nothing. If what you need is not listed, click a short description of it.\n${SCREEN_MARKER}\n${formatObservation(screen, format)}`;
+				return { content: [{ type: "text", text }], details: { outcome: "edge" } };
+			}
 			await helper.request("scroll", { direction: params.direction, amount: 8, ...(element ? { id: element.id } : {}) });
 			return finish(signature, `Scrolled ${params.direction}.`, screen);
 		},

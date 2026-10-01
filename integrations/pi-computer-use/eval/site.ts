@@ -5,6 +5,8 @@ export interface SiteLog {
 	submissions: Record<string, string>[];
 	visits: string[];
 	deletes: number;
+	searches: string[];
+	canvasClicks: number;
 }
 
 const page = (title: string, body: string) => `<!doctype html>
@@ -22,11 +24,13 @@ const products: Record<string, { name: string; price: string }> = {
 };
 
 export function startSite(port = 8765): Promise<{ server: Server; log: SiteLog; reset: () => void }> {
-	const log: SiteLog = { submissions: [], visits: [], deletes: 0 };
+	const log: SiteLog = { submissions: [], visits: [], deletes: 0, searches: [], canvasClicks: 0 };
 	const reset = () => {
 		log.submissions = [];
 		log.visits = [];
 		log.deletes = 0;
+		log.searches = [];
+		log.canvasClicks = 0;
 	};
 	const server = createServer((request, response) => {
 		const url = new URL(request.url ?? "/", `http://localhost:${port}`);
@@ -81,6 +85,46 @@ export function startSite(port = 8765): Promise<{ server: Server; log: SiteLog; 
 					`<nav><a href="/">Home</a> · <a href="/shop">Shop</a></nav><p>Updated this morning. Read time 2 minutes.</p><h1>Harbor Bridge Reopens After Repairs</h1><p>The bridge reopened to traffic on Tuesday after three months of work.</p><h2>Traffic changes</h2><p>Two lanes remain closed at night.</p>`,
 				),
 			);
+		}
+		if (url.pathname === "/library") {
+			const query = url.searchParams.get("q");
+			if (query !== null) log.searches.push(query);
+			const books: Record<string, string> = {
+				"dune": "Dune by Frank Herbert — shelf B4",
+				"emma": "Emma by Jane Austen — shelf A2",
+				"ulysses": "Ulysses by James Joyce — shelf C9",
+			};
+			const hit = query ? books[query.trim().toLowerCase()] : undefined;
+			const results = query === null ? "" : hit ? `<h2>Result</h2><p>${hit}</p>` : "<h2>No results</h2>";
+			return send(
+				page(
+					"City Library",
+					`<h1>City Library catalog</h1><form method="get" action="/library"><label for="q">Search books</label><input id="q" name="q" type="search" placeholder="Title"><button type="submit">Search</button></form>${results}`,
+				),
+			);
+		}
+		if (url.pathname === "/canvas") {
+			return send(
+				page(
+					"Arcade",
+					`<h1>Arcade</h1><p>Press the big green START button to begin.</p><canvas id="c" width="600" height="300" style="border:1px solid #ccc"></canvas>
+<p id="status">Not started</p>
+<script>
+const c = document.getElementById("c"), g = c.getContext("2d");
+g.fillStyle = "#eee"; g.fillRect(0, 0, 600, 300);
+g.fillStyle = "#c33"; g.fillRect(40, 110, 140, 80); g.fillStyle = "#fff"; g.font = "bold 28px sans-serif"; g.fillText("STOP", 72, 160);
+g.fillStyle = "#2a2"; g.fillRect(400, 110, 160, 80); g.fillStyle = "#fff"; g.fillText("START", 437, 160);
+c.addEventListener("click", (e) => {
+  const r = c.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (x >= 400 && x <= 560 && y >= 110 && y <= 190) { fetch("/canvas-start"); document.getElementById("status").textContent = "Game started!"; }
+});
+</script>`,
+				),
+			);
+		}
+		if (url.pathname === "/canvas-start") {
+			log.canvasClicks++;
+			return send("ok");
 		}
 		if (url.pathname === "/account") {
 			return send(

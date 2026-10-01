@@ -23,7 +23,9 @@ export function formatObservation(observation: Observation, options: FormatOptio
 	if (observation.scroll !== undefined) lines.push(`Scroll: ${describeScroll(observation.scroll)}`);
 
 	const elements = observation.elements;
-	if (elements.length === 0) {
+	if (observation.noWindow) {
+		lines.push(`${observation.app} has no open window. Press cmd+n or use open_app to open one.`);
+	} else if (elements.length === 0) {
 		lines.push("Elements: none found (try look with screenshot=true, or press_key / scroll)");
 	} else {
 		lines.push("Elements:");
@@ -35,6 +37,12 @@ export function formatObservation(observation: Observation, options: FormatOptio
 
 	// Labels already listed as elements needn't be repeated as text.
 	const labels = new Set(elements.map((element) => element.label.trim().toLowerCase()).filter(Boolean));
+	if (elements.some((element) => /^\d+$/.test(element.label))) {
+		lines.push('Note: some labels are numbers. click {"target": "7"} means element [7], not the key labelled 7; to enter digits, use type_text.');
+	}
+	const tip = observation.app ? appTips[observation.app] : undefined;
+	if (tip) lines.push(`Tip: ${tip}`);
+
 	const text = observation.text
 		.split(" | ")
 		.filter((segment) => !labels.has(segment.trim().toLowerCase()))
@@ -50,6 +58,15 @@ export function formatObservation(observation: Observation, options: FormatOptio
 	}
 	return lines.join("\n");
 }
+
+/** Short, app-specific shortcuts that save small models many steps. */
+const appTips: Record<string, string> = {
+	Calculator: 'type the whole calculation with type_text, e.g. {"text": "(125+75)/8="}; press_key "escape" clears.',
+	TextEdit: 'press_key "cmd+n" makes a new document; type_text without a target types into the document.',
+	Finder: 'press_key "cmd+shift+g" and type a folder path to go there; click sidebar rows to switch folders.',
+	"System Settings": "type in the search field to find a setting, or click the sidebar row.",
+	Safari: 'press_key "cmd+l" then type_text a URL with "submit": true to visit a page.',
+};
 
 export function describeScroll(position: number): string {
 	if (position <= 0.01) return "at the top (more below)";

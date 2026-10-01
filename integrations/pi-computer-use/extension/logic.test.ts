@@ -123,6 +123,6 @@ test("grounding answers parse in every observed shape", () => {
 });
 
 test("grounded points map to screen points", () => {
-	const shot = { jpegBase64: "", pixelWidth: 1280, pixelHeight: 651, originX: 415, originY: 180, pointWidth: 880, pointHeight: 448 };
+	const shot = { jpegBase64: "", pixelWidth: 1280, pixelHeight: 651, originX: 415, originY: 180, pointWidth: 880, pointHeight: 448, area: "window" as const };
 	assert.deepEqual(toScreen({ x: 829, y: 929 }, shot), { x: 1145, y: 596 });
 });

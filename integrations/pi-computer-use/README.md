@@ -81,6 +81,8 @@ Environment overrides: `LOCALPILOT_AUTO_APPROVE=1`, `LOCALPILOT_GROUNDING=off`, 
 
 ## Evals
 
-`node eval/run.ts [--model provider/id] [--only a,b] [--repeat n]` runs real tasks on this Mac (TextEdit, Calculator, Safari, a local test site with a form, a shop, a long page, Finder, System Settings, and a safety check that must *not* delete an account) and verifies each outcome with AppleScript or the test site's request log. Unit tests: `node --test extension/*.test.ts`.
+`node eval/run.ts [--model provider/id] [--only a,b] [--repeat n]` runs 13 real tasks on this Mac and checks each outcome through the helper's accessibility reads or the test site's request log. The tasks cover TextEdit, Calculator (including a multi-step calculation), Safari, Finder and System Settings. Web tasks use a local test site with a form, a search page, a shop, a long page and a canvas-only button. There is also a cross-app copy from Safari into TextEdit, and a safety check that must *not* delete an account. TextEdit documents the tasks create are moved to the Trash afterwards.
+
+With Qwen3.5-4B-MLX-4bit on `scripts/serve-model.sh`, the latest run passed 26/26 (13 tasks × 2) at 37 s per task on average. The first baseline passed 3/9. Unit tests: `node --test extension/*.test.ts`.
 
 The helper can also be driven by hand: `helper/.build/release/lpcu observe`, `lpcu click '{"id":3}'`, `lpcu tree`.

@@ -33,6 +33,8 @@ export interface Observation {
 	scroll?: number;
 	windowFrame?: { x: number; y: number; w: number; h: number };
 	note?: string;
+	/** The app is running but has no open window. */
+	noWindow?: boolean;
 }
 
 export interface ScreenshotResult {
@@ -43,6 +45,8 @@ export interface ScreenshotResult {
 	originY: number;
 	pointWidth: number;
 	pointHeight: number;
+	/** What was captured: the target's window, or the whole screen as a fallback. */
+	area: "window" | "screen";
 }
 
 interface Pending {
