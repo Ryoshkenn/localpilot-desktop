@@ -1,0 +1,22 @@
+{
+  "name": "pi-localpilot-computer-use",
+  "version": "0.1.0",
+  "description": "LocalPilot computer use for the pi coding agent: lets small local models operate macOS through accessibility-first tools.",
+  "type": "module",
+  "keywords": ["pi-package", "computer-use", "macos", "local-models"],
+  "license": "MIT",
+  "os": ["darwin"],
+  "pi": {
+    "extensions": ["./extension/index.ts"]
+  },
+  "scripts": {
+    "build:helper": "swift build -c release --package-path helper",
+    "test": "node --experimental-strip-types --test extension/*.test.ts",
+    "eval": "node --experimental-strip-types eval/run.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
