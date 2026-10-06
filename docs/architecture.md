@@ -1,61 +1,73 @@
 # LocalPilot Desktop Architecture
 
-LocalPilot Desktop is a macOS-only native app. The first implementation is a SwiftUI app with AppKit where macOS window behavior is required.
+LocalPilot Desktop is a macOS-only native app: SwiftUI for the interface, AppKit
+where window behavior requires it (the Agent Mode overlay and HUD).
 
-## Implemented Now
+## Layout
 
-- XcodeGen project scaffold in `project.yml`.
-- Native macOS app target named `LocalPilotDesktop` with bundle identifier `com.localpilot.desktop`.
-- Full app window with sidebar, chat panel, inspector, and log snippets.
-- Milestone 1 fake Agent Mode:
-  - user enters a task and presses Start;
-  - app enters `running`;
-  - transparent always-on-top AppKit overlay window shows a haze, fake cursor, and floating controls;
-  - Pause freezes the fake loop and disables the executor flag;
-  - Continue accepts an optional instruction and resumes;
-  - Stop cancels the loop immediately, disables execution, clears queued fake work, and exits Agent Mode.
-- Local JSONL event logging at Application Support: `LocalPilot Desktop/logs.jsonl`.
-- Core module placeholders under `core/agent` for orchestrator, planner, guard, state, context, policy, executor, providers, and logging.
-- Internal model integration:
-  - default in-process planner and guard providers run without Ollama or a
-    separately configured runtime;
-  - the internal planner emits one structured action at a time for smoke-run
-    verification;
-  - the internal guard returns JSON allow/deny decisions through the same guard
-    adapter as future model backends.
-- Optional managed local model runtime integration:
-  - runtime executable path, planner model file, guard model file, host, port, launch arguments, health path, and completion path are configurable in Settings;
-  - LocalPilot starts the runtime process itself with `Process`;
-  - planner and guard calls go through a narrow localhost JSON endpoint;
-  - Stop, blocked, done, and connection-test cleanup terminate the managed runtime through `ModelSessionManager`.
-- Planner and guard adapters that request JSON-only model output and decode structured actions/guard decisions.
-- Settings persistence for provider mode, runtime executable/model paths, planner model, guard model, runtime endpoint details, context window, temperature, timeout, scopes, guard enablement, and dry-run mode.
-- Model cleanup through `ModelSessionManager`; registered providers cancel active requests and stop their managed runtime when Stop or task completion/blocked cleanup runs.
+- `apps/macos/Sources`: the app. `DesignSystem` (theme and shared components),
+  `Chat`, `UI` (sidebar, settings, history, activity log, model controls),
+  `Overlay` (haze, AI cursor, HUD, global stop hot key), `Permissions`.
+- `core/agent`: the agent, with no UI code.
+  - `orchestrator/AgentController`: run state machine and the control loop.
+  - `planner`: prompt construction, the action format reference, and JSON
+    recovery from raw model output.
+  - `providers`: model backends and settings.
+  - `policy`: action schema and the deterministic policy engine.
+  - `executor`: the only code that touches the OS (CGEvent, NSWorkspace, a
+    restricted shell).
+  - `context`: screen observation, accessibility element capture, history
+    compaction.
+  - `logging`: JSONL event log writer and reader.
 
-## Control Boundary
+## Model providers
 
-The model must never call operating-system APIs, shell commands, mouse events, keyboard events, file APIs, websites, or clipboard APIs. Future model providers may only return one structured action. LocalPilot validates that action, classifies it with deterministic policy, asks for native user approval when needed, optionally sends it to a guard model, and only then passes it to the executor.
+- **Local server** (`OpenAICompatibleProvider`): any server implementing the
+  OpenAI chat completions API, such as LM Studio, Ollama, `llama-server`,
+  `mlx_lm.server`, vLLM, or Jan. `LocalModelDiscovery` probes the usual ports
+  (1234, 11434, 8080, 8000, 1337) plus the configured address and lists the
+  models each server offers. Structured output is requested as a
+  `json_schema` response format; if a server rejects it, the request is retried
+  once without it.
+- **Built-in rules** (`BuiltInRulesProvider`): deterministic rules for a few
+  task shapes. It needs no model and exists to exercise the loop.
 
-## Control Loop
+## Control boundary
 
-1. User enters a task.
-2. Orchestrator captures current context.
-3. Planner proposes exactly one structured action.
-4. Schema validator validates the action.
-5. Deterministic policy engine returns `allow`, `ask_user`, or `block`.
-6. Native approval UI handles `ask_user`.
-7. Guard model returns `allow` or `deny`; it cannot override policy blocks.
-8. Executor performs one action if allowed.
-9. State manager records result and logs the event.
-10. Loop repeats until done, paused, stopped, or blocked.
+Models never call operating-system APIs, shell commands, input events, files,
+websites, or the clipboard. A model proposes structured actions. LocalPilot
+validates each one, classifies it with deterministic policy, asks the user when
+policy requires it, and only then passes it to the executor.
 
-## Stubbed Or Restricted For Later
+## Control loop
 
-- ScreenCaptureKit screenshot capture.
-- Accessibility / AXUIElement observation.
-- CGEvent / Quartz real input execution.
-- Browser URL/domain detection.
-- Bundled model weights and a bundled LocalPilot model runner binary. The app now owns the runtime lifecycle, but the executable and model files must be supplied in Settings until a runner is packaged.
-- LM Studio, MLX, llama.cpp, and generic OpenAI-compatible compatibility adapters.
-- Real context compaction persistence files beyond the documented interfaces.
-- Non-dry-run OS execution. Current execution is intentionally dry-run unless later permissioned executors are added.
+1. The user enters a task.
+2. The orchestrator observes the screen: frontmost app and window, and
+   actionable accessibility elements with their frames.
+3. The planner proposes one action or a short ordered plan.
+4. The reply is recovered (thinking tags, code fences, and preamble are
+   stripped) and decoded against the action schema. Invalid JSON is retried
+   once, then the run stops.
+5. For each action, the policy engine returns `allow`, `ask_user`, or `block`.
+   `ask_user` shows an approval card in the chat and in the Agent Mode HUD.
+6. The executor performs the action; dry run validates it without touching the
+   OS.
+7. The result is recorded and logged, and the screen is observed again before
+   the next action.
+8. The loop repeats until the task finishes, is blocked, or is stopped. Pause
+   and Stop are honored at every safe boundary.
+
+## Native tool transport
+
+Local-server runs default to `NativeToolSession`. `OpenAICompatibleProvider`
+sends typed user/assistant/tool messages and the functions from
+`NativeToolRegistry` to chat completions. Each registry entry owns its public
+argument schema and action adapter. The existing validator, policy engine,
+approval flow and executor remain the execution boundary.
+
+A session correlates results with the server's tool call IDs, preserves native
+assistant call messages and separate reasoning content, and keeps the latest
+screen image ephemeral. A native final answer is ordinary text with no calls.
+`JSONActionPlanner` remains available only in explicit JSON compatibility mode
+or for deterministic built-in rules. The settings migration defaults existing
+local-server selections to native tools without changing their selected model.

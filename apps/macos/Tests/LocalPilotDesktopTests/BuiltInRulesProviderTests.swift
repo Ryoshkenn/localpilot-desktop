@@ -2,19 +2,18 @@ import Foundation
 import Testing
 @testable import LocalPilotDesktop
 
-struct InternalModelProviderTests {
+struct BuiltInRulesProviderTests {
     @Test
-    func defaultSettingsUseInternalInProcessModelProvider() {
+    func defaultSettingsUseBuiltInRules() {
         let settings = AppSettings.defaultValue
 
-        #expect(settings.modelProviderMode == .internalInProcess)
-        #expect(settings.plannerConfiguration().providerName == "internal-in-process")
-        #expect(settings.guardConfiguration().providerName == "internal-in-process")
+        #expect(settings.modelProviderMode == .builtIn)
+        #expect(settings.plannerConfiguration().modelName == "built-in-rules")
     }
 
     @Test
     func internalPlannerReturnsOneStructuredActionWithoutRuntime() async throws {
-        let provider = InternalLocalModelProvider(role: .planner)
+        let provider = BuiltInRulesProvider()
         let planner = JSONActionPlanner(provider: provider)
 
         let first = try await planner.proposeOneAction(
@@ -35,7 +34,7 @@ struct InternalModelProviderTests {
 
     @Test
     func internalPlannerCanRunSimpleTaskAfterObservation() async throws {
-        let provider = InternalLocalModelProvider(role: .planner)
+        let provider = BuiltInRulesProvider()
         let planner = JSONActionPlanner(provider: provider)
 
         let first = try await planner.proposeOneAction(
@@ -62,7 +61,7 @@ struct InternalModelProviderTests {
 
     @Test
     func internalPlannerSupportsKeyboardAndTerminalTaskShapes() async throws {
-        let typingProvider = InternalLocalModelProvider(role: .planner)
+        let typingProvider = BuiltInRulesProvider()
         let typingPlanner = JSONActionPlanner(provider: typingProvider)
         _ = try await typingPlanner.proposeOneAction(
             originalTask: "type \"hello local pilot\"",
@@ -75,7 +74,7 @@ struct InternalModelProviderTests {
             recentMessages: []
         )
 
-        let terminalProvider = InternalLocalModelProvider(role: .planner)
+        let terminalProvider = BuiltInRulesProvider()
         let terminalPlanner = JSONActionPlanner(provider: terminalProvider)
         _ = try await terminalPlanner.proposeOneAction(
             originalTask: "run `pwd`",
@@ -92,28 +91,5 @@ struct InternalModelProviderTests {
         #expect(typingAction.text == "hello local pilot")
         #expect(terminalAction.type == .runTerminalCommand)
         #expect(terminalAction.command == "pwd")
-    }
-
-    @Test
-    func internalGuardReturnsAllowDecisionWithoutRuntime() async throws {
-        let provider = InternalLocalModelProvider(role: .guard)
-        let guardModel = JSONGuardModel(provider: provider)
-        let action = StructuredAction(
-            type: .observe,
-            targetKind: "screen",
-            targetText: "current screen",
-            expectedResult: "fresh screen state",
-            riskLevel: .low,
-            reason: "observe"
-        )
-
-        let decision = try await guardModel.review(
-            action: action,
-            context: .empty,
-            policyDecision: PolicyDecision(classification: .allow, reason: "Low risk")
-        )
-
-        #expect(decision.decision == .allow)
-        #expect(decision.reason.contains("internal guard"))
     }
 }

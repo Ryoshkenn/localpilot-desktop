@@ -13,6 +13,7 @@ actor SpyComputerController: ComputerControlling {
     private(set) var openedURLs: [String] = []
     private(set) var terminalCommands: [String] = []
     private(set) var switchedApps: [String] = []
+    private(set) var browserCalls: [String] = []
 
     func click(at point: CGPoint) async {
         clicks.append(point)
@@ -26,7 +27,7 @@ actor SpyComputerController: ComputerControlling {
         typedText.append(text)
     }
 
-    func scroll(deltaY: Int32) async {
+    func scroll(deltaY: Int32, at point: CGPoint?) async {
         scrolls.append(deltaY)
     }
 
@@ -50,6 +51,11 @@ actor SpyComputerController: ComputerControlling {
     func runTerminalCommand(_ command: String) async -> String {
         terminalCommands.append(command)
         return "spy output"
+    }
+
+    func browserAction(_ type: ActionType, value: String) async -> String {
+        browserCalls.append(type.rawValue + ":" + value)
+        return "Chrome action completed."
     }
 
     func switchApp(named appName: String) async -> Bool {
@@ -376,7 +382,7 @@ struct ActionExecutorTests {
 
         let result = await executor.execute(action)
 
-        #expect(result == "Click blocked: element 7 not found.")
+        #expect(result.contains("element 7 not found or stale"))
         #expect(await controller.clicks.isEmpty)
     }
 
@@ -415,6 +421,7 @@ struct ActionExecutorTests {
         #expect(result == "Typed safe text into Search at 60,90.")
         #expect(await controller.clicks == [CGPoint(x: 60, y: 90)])
         #expect(await controller.typedText == ["hello"])
+        #expect(await controller.keys == ["cmd+a"])
     }
 
     @Test
@@ -470,5 +477,20 @@ struct ActionExecutorTests {
         #expect(negative.contains("coordinates are missing"))
         #expect(nan.contains("coordinates are missing"))
         #expect(await controller.clicks.isEmpty)
+    }
+}
+
+@MainActor
+struct BrowserActionRoutingTests {
+    @Test
+    func cannedBrowserCommandsRouteWithoutOpeningChrome() async throws {
+        let spy = SpyComputerController()
+        let executor = LocalPilotActionExecutor(computerController: spy, dryRun: false)
+        let response = try JSONActionPlanner.parseResponse(#"{"actions":[{"type":"browser_new_tab","url":"https://example.com"},{"type":"browser_navigate","url":"https://example.org"},{"type":"browser_switch_tab","target":"2"},{"type":"browser_close_tab","target":"2"}]}"#)
+        for action in response.actions { _ = await executor.execute(action) }
+        #expect(await spy.browserCalls == ["browser_new_tab:https://example.com", "browser_navigate:https://example.org", "browser_switch_tab:2", "browser_close_tab:2"])
+        await executor.prepareForRun(dryRun: true)
+        _ = await executor.execute(response.actions[0])
+        #expect(await spy.browserCalls.count == 4)
     }
 }

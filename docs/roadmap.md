@@ -56,9 +56,9 @@ Still later:
 - invalid JSON retry once with schema correction prompt;
 - LM Studio, MLX, and llama.cpp direct integrations.
 
-## Milestone 6: Guard Model
+## Milestone 6: Guard Model (removed)
 
-Implemented for managed local JSON guard output. Guard receives current context, proposed action, and deterministic policy result. It can only allow or deny and cannot override deterministic blocks or grant human approval.
+Implemented, then removed on 2026-09-26 to keep evaluation runs simple. Deterministic policy and user approval remain the safety layer; a guard may return later as an optional stage.
 
 ## Milestone 7: Context Compaction
 

@@ -1,67 +1,126 @@
 import Foundation
 
 public enum ModelProviderMode: String, Codable, CaseIterable, Identifiable, Sendable {
-    case internalInProcess = "internal_in_process"
-    case managedRuntime = "managed_runtime"
+    /// Deterministic rules for a few task shapes. No model required.
+    case builtIn = "internal_in_process"
+    /// A model served by a local OpenAI-compatible server (LM Studio, Ollama, ...).
+    case localServer = "local_server"
 
     public var id: String { rawValue }
 
     public var displayName: String {
         switch self {
-        case .internalInProcess: "Internal in-process"
-        case .managedRuntime: "Managed runtime"
+        case .builtIn: "Built-in rules"
+        case .localServer: "Local server"
         }
     }
 }
 
+public enum ToolCallingMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case native
+    case jsonCompatibility = "json_compatibility"
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self { case .native: "Native tools"; case .jsonCompatibility: "JSON compatibility" }
+    }
+}
+
+/// Sampling and output controls sent with every chat completion request.
+/// These mirror what LM Studio's OpenAI-compatible endpoint accepts
+/// (llama.cpp and MLX servers accept the same names). `nil` leaves the
+/// server's own per-model default in place.
+public struct GenerationSettings: Codable, Equatable, Sendable {
+    /// Upper bound on tokens generated per reply, including reasoning.
+    public var maxTokens: Int = 4_096
+    public var topP: Double?
+    public var topK: Int?
+    /// llama.cpp/MLX repetition penalty; 1.0 disables it.
+    public var repeatPenalty: Double?
+    public var presencePenalty: Double?
+    public var frequencyPenalty: Double?
+    /// Fixed seed for reproducible sampling.
+    public var seed: Int?
+    /// Strings that end generation when produced.
+    public var stopSequences: [String] = []
+
+    public static let defaultValue = GenerationSettings()
+
+    public init(
+        maxTokens: Int = 4_096,
+        topP: Double? = nil,
+        topK: Int? = nil,
+        repeatPenalty: Double? = nil,
+        presencePenalty: Double? = nil,
+        frequencyPenalty: Double? = nil,
+        seed: Int? = nil,
+        stopSequences: [String] = []
+    ) {
+        self.maxTokens = maxTokens
+        self.topP = topP
+        self.topK = topK
+        self.repeatPenalty = repeatPenalty
+        self.presencePenalty = presencePenalty
+        self.frequencyPenalty = frequencyPenalty
+        self.seed = seed
+        self.stopSequences = stopSequences
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 4_096
+        topP = try container.decodeIfPresent(Double.self, forKey: .topP)
+        topK = try container.decodeIfPresent(Int.self, forKey: .topK)
+        repeatPenalty = try container.decodeIfPresent(Double.self, forKey: .repeatPenalty)
+        presencePenalty = try container.decodeIfPresent(Double.self, forKey: .presencePenalty)
+        frequencyPenalty = try container.decodeIfPresent(Double.self, forKey: .frequencyPenalty)
+        seed = try container.decodeIfPresent(Int.self, forKey: .seed)
+        stopSequences = try container.decodeIfPresent([String].self, forKey: .stopSequences) ?? []
+    }
+
+    /// Request fields for an OpenAI-compatible chat completion. Unset values
+    /// are omitted so the server's defaults apply.
+    public var payload: [String: Any] {
+        var value: [String: Any] = ["max_tokens": max(1, maxTokens)]
+        if let topP { value["top_p"] = topP }
+        if let topK { value["top_k"] = topK }
+        if let repeatPenalty { value["repeat_penalty"] = repeatPenalty }
+        if let presencePenalty { value["presence_penalty"] = presencePenalty }
+        if let frequencyPenalty { value["frequency_penalty"] = frequencyPenalty }
+        if let seed { value["seed"] = seed }
+        let stops = stopSequences.filter { !$0.isEmpty }
+        if !stops.isEmpty { value["stop"] = stops }
+        return value
+    }
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
-    /// Maximum context window we ever request by default. We default the budget
-    /// high so capable local models can use their full window, while the
-    /// `ContextCompactor` keeps the actual payload tiny enough for small-window
-    /// models to still do real work.
+    /// Token budget the context compactor plans around.
     public static let maximumContextWindowSize = 131_072
+    public static let defaultServerURL = "http://127.0.0.1:1234/v1"
 
     public var modelProviderMode: ModelProviderMode
-    public var runtimeExecutableURL: URL
-    public var plannerModelURL: URL
-    public var guardModelURL: URL
-    public var runtimeHost: String
-    public var runtimePort: Int
-    public var runtimeLaunchArguments: [String]
-    public var runtimeEnvironment: [String: String]
-    public var runtimeHealthPath: String
-    public var runtimeCompletionsPath: String
+    /// Base URL of the OpenAI-compatible API, including the `/v1` segment.
+    public var serverBaseURL: String
+    /// Model identifier as reported by the server's `/models` endpoint.
     public var plannerModel: String
-    public var guardModel: String
     public var contextWindowSize: Int
     public var temperature: Double
     public var timeoutSeconds: TimeInterval
-    public var unloadModelsAfterRun: Bool
-    public var useGuardModel: Bool
     public var dryRunExecutionOnly: Bool
     public var useStructuredDecoding: Bool
+    public var toolCallingMode: ToolCallingMode = .native
+    public var generation: GenerationSettings = .defaultValue
     public var allowedDomains: [String]
     public var allowedApps: [String]
     public var allowedFolders: [String]
 
     public static let defaultValue = AppSettings(
-        modelProviderMode: .internalInProcess,
-        runtimeExecutableURL: Self.defaultRuntimeExecutableURL(),
-        plannerModelURL: Self.defaultModelDirectory().appending(path: "planner.gguf"),
-        guardModelURL: Self.defaultModelDirectory().appending(path: "guard.gguf"),
-        runtimeHost: "127.0.0.1",
-        runtimePort: 49191,
-        runtimeLaunchArguments: ["--model", "{model}", "--host", "{host}", "--port", "{port}"],
-        runtimeEnvironment: [:],
-        runtimeHealthPath: "/health",
-        runtimeCompletionsPath: "/v1/localpilot/complete",
-        plannerModel: "planner.gguf",
-        guardModel: "guard.gguf",
-        contextWindowSize: Self.maximumContextWindowSize,
+        modelProviderMode: .builtIn,
+        serverBaseURL: defaultServerURL,
+        plannerModel: "",
+        contextWindowSize: maximumContextWindowSize,
         temperature: 0.1,
-        timeoutSeconds: 60,
-        unloadModelsAfterRun: true,
-        useGuardModel: true,
+        timeoutSeconds: 120,
         dryRunExecutionOnly: true,
         useStructuredDecoding: true,
         allowedDomains: [],
@@ -69,55 +128,56 @@ public struct AppSettings: Codable, Equatable, Sendable {
         allowedFolders: []
     )
 
+    public init(
+        modelProviderMode: ModelProviderMode,
+        serverBaseURL: String,
+        plannerModel: String,
+        contextWindowSize: Int,
+        temperature: Double,
+        timeoutSeconds: TimeInterval,
+        dryRunExecutionOnly: Bool,
+        useStructuredDecoding: Bool,
+        allowedDomains: [String],
+        allowedApps: [String],
+        allowedFolders: [String]
+    ) {
+        self.modelProviderMode = modelProviderMode
+        self.serverBaseURL = serverBaseURL
+        self.plannerModel = plannerModel
+        self.contextWindowSize = contextWindowSize
+        self.temperature = temperature
+        self.timeoutSeconds = timeoutSeconds
+        self.dryRunExecutionOnly = dryRunExecutionOnly
+        self.useStructuredDecoding = useStructuredDecoding
+        self.allowedDomains = allowedDomains
+        self.allowedApps = allowedApps
+        self.allowedFolders = allowedFolders
+    }
+
+    /// Short label for the active model, suitable for compact UI.
+    public var activeModelLabel: String {
+        switch modelProviderMode {
+        case .builtIn: ModelProviderMode.builtIn.displayName
+        case .localServer: plannerModel.isEmpty ? "No model selected" : plannerModel
+        }
+    }
+
+    public var serverURL: URL? {
+        let trimmed = serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let scheme = url.scheme, ["http", "https"].contains(scheme), url.host != nil else {
+            return nil
+        }
+        return url
+    }
+
     public func plannerConfiguration() -> ModelProviderConfiguration {
         ModelProviderConfiguration(
-            providerName: modelProviderMode.providerName,
-            modelName: plannerModel,
-            contextWindowSize: contextWindowSize,
+            providerName: modelProviderMode.rawValue,
+            modelName: modelProviderMode == .builtIn ? "built-in-rules" : plannerModel,
             temperature: temperature,
             timeoutSeconds: timeoutSeconds,
-            supportsStreaming: false
+            generation: generation
         )
-    }
-
-    public func guardConfiguration() -> ModelProviderConfiguration {
-        ModelProviderConfiguration(
-            providerName: modelProviderMode.providerName,
-            modelName: guardModel,
-            contextWindowSize: contextWindowSize,
-            temperature: 0,
-            timeoutSeconds: timeoutSeconds,
-            supportsStreaming: false
-        )
-    }
-
-    public func plannerRuntimeConfiguration() -> ManagedModelRuntimeConfiguration {
-        runtimeConfiguration(modelURL: plannerModelURL)
-    }
-
-    public func guardRuntimeConfiguration() -> ManagedModelRuntimeConfiguration {
-        runtimeConfiguration(modelURL: guardModelURL)
-    }
-
-    private func runtimeConfiguration(modelURL: URL) -> ManagedModelRuntimeConfiguration {
-        ManagedModelRuntimeConfiguration(
-            executableURL: runtimeExecutableURL,
-            modelURL: modelURL,
-            host: runtimeHost,
-            port: runtimePort,
-            launchArguments: runtimeLaunchArguments,
-            environment: runtimeEnvironment,
-            healthPath: runtimeHealthPath,
-            completionsPath: runtimeCompletionsPath
-        )
-    }
-
-    public static func defaultRuntimeExecutableURL() -> URL {
-        defaultSupportDirectory().appending(path: "bin/localpilot-model-runner")
-    }
-
-    public static func defaultModelDirectory() -> URL {
-        defaultSupportDirectory().appending(path: "Models", directoryHint: .isDirectory)
     }
 
     static func defaultSupportDirectory() -> URL {
@@ -128,111 +188,39 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case modelProviderMode
-        case runtimeExecutableURL
-        case plannerModelURL
-        case guardModelURL
-        case runtimeHost
-        case runtimePort
-        case runtimeLaunchArguments
-        case runtimeEnvironment
-        case runtimeHealthPath
-        case runtimeCompletionsPath
+        case serverBaseURL
         case plannerModel
-        case guardModel
         case contextWindowSize
         case temperature
         case timeoutSeconds
-        case unloadModelsAfterRun
-        case useGuardModel
         case dryRunExecutionOnly
         case useStructuredDecoding
+        case toolCallingMode
+        case generation
         case allowedDomains
         case allowedApps
         case allowedFolders
     }
 
-    public init(
-        modelProviderMode: ModelProviderMode,
-        runtimeExecutableURL: URL,
-        plannerModelURL: URL,
-        guardModelURL: URL,
-        runtimeHost: String,
-        runtimePort: Int,
-        runtimeLaunchArguments: [String],
-        runtimeEnvironment: [String: String],
-        runtimeHealthPath: String,
-        runtimeCompletionsPath: String,
-        plannerModel: String,
-        guardModel: String,
-        contextWindowSize: Int,
-        temperature: Double,
-        timeoutSeconds: TimeInterval,
-        unloadModelsAfterRun: Bool,
-        useGuardModel: Bool,
-        dryRunExecutionOnly: Bool,
-        useStructuredDecoding: Bool,
-        allowedDomains: [String],
-        allowedApps: [String],
-        allowedFolders: [String]
-    ) {
-        self.modelProviderMode = modelProviderMode
-        self.runtimeExecutableURL = runtimeExecutableURL
-        self.plannerModelURL = plannerModelURL
-        self.guardModelURL = guardModelURL
-        self.runtimeHost = runtimeHost
-        self.runtimePort = runtimePort
-        self.runtimeLaunchArguments = runtimeLaunchArguments
-        self.runtimeEnvironment = runtimeEnvironment
-        self.runtimeHealthPath = runtimeHealthPath
-        self.runtimeCompletionsPath = runtimeCompletionsPath
-        self.plannerModel = plannerModel
-        self.guardModel = guardModel
-        self.contextWindowSize = contextWindowSize
-        self.temperature = temperature
-        self.timeoutSeconds = timeoutSeconds
-        self.unloadModelsAfterRun = unloadModelsAfterRun
-        self.useGuardModel = useGuardModel
-        self.dryRunExecutionOnly = dryRunExecutionOnly
-        self.useStructuredDecoding = useStructuredDecoding
-        self.allowedDomains = allowedDomains
-        self.allowedApps = allowedApps
-        self.allowedFolders = allowedFolders
-    }
-
+    /// Every field falls back to its default, and unknown provider modes from
+    /// older versions (e.g. the removed managed runtime) fall back to built-in,
+    /// so an old settings file never fails to load.
     public init(from decoder: Decoder) throws {
         let defaults = Self.defaultValue
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        modelProviderMode = try container.decodeIfPresent(ModelProviderMode.self, forKey: .modelProviderMode) ?? defaults.modelProviderMode
-        runtimeExecutableURL = try container.decodeIfPresent(URL.self, forKey: .runtimeExecutableURL) ?? defaults.runtimeExecutableURL
-        plannerModelURL = try container.decodeIfPresent(URL.self, forKey: .plannerModelURL) ?? defaults.plannerModelURL
-        guardModelURL = try container.decodeIfPresent(URL.self, forKey: .guardModelURL) ?? defaults.guardModelURL
-        runtimeHost = try container.decodeIfPresent(String.self, forKey: .runtimeHost) ?? defaults.runtimeHost
-        runtimePort = try container.decodeIfPresent(Int.self, forKey: .runtimePort) ?? defaults.runtimePort
-        runtimeLaunchArguments = try container.decodeIfPresent([String].self, forKey: .runtimeLaunchArguments) ?? defaults.runtimeLaunchArguments
-        runtimeEnvironment = try container.decodeIfPresent([String: String].self, forKey: .runtimeEnvironment) ?? defaults.runtimeEnvironment
-        runtimeHealthPath = try container.decodeIfPresent(String.self, forKey: .runtimeHealthPath) ?? defaults.runtimeHealthPath
-        runtimeCompletionsPath = try container.decodeIfPresent(String.self, forKey: .runtimeCompletionsPath) ?? defaults.runtimeCompletionsPath
+        modelProviderMode = (try? container.decodeIfPresent(ModelProviderMode.self, forKey: .modelProviderMode)) ?? defaults.modelProviderMode
+        serverBaseURL = try container.decodeIfPresent(String.self, forKey: .serverBaseURL) ?? defaults.serverBaseURL
         plannerModel = try container.decodeIfPresent(String.self, forKey: .plannerModel) ?? defaults.plannerModel
-        guardModel = try container.decodeIfPresent(String.self, forKey: .guardModel) ?? defaults.guardModel
         contextWindowSize = try container.decodeIfPresent(Int.self, forKey: .contextWindowSize) ?? defaults.contextWindowSize
         temperature = try container.decodeIfPresent(Double.self, forKey: .temperature) ?? defaults.temperature
         timeoutSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .timeoutSeconds) ?? defaults.timeoutSeconds
-        unloadModelsAfterRun = try container.decodeIfPresent(Bool.self, forKey: .unloadModelsAfterRun) ?? defaults.unloadModelsAfterRun
-        useGuardModel = try container.decodeIfPresent(Bool.self, forKey: .useGuardModel) ?? defaults.useGuardModel
         dryRunExecutionOnly = try container.decodeIfPresent(Bool.self, forKey: .dryRunExecutionOnly) ?? defaults.dryRunExecutionOnly
+        toolCallingMode = try container.decodeIfPresent(ToolCallingMode.self, forKey: .toolCallingMode) ?? .native
         useStructuredDecoding = try container.decodeIfPresent(Bool.self, forKey: .useStructuredDecoding) ?? defaults.useStructuredDecoding
+        generation = (try? container.decodeIfPresent(GenerationSettings.self, forKey: .generation)) ?? .defaultValue
         allowedDomains = try container.decodeIfPresent([String].self, forKey: .allowedDomains) ?? defaults.allowedDomains
         allowedApps = try container.decodeIfPresent([String].self, forKey: .allowedApps) ?? defaults.allowedApps
         allowedFolders = try container.decodeIfPresent([String].self, forKey: .allowedFolders) ?? defaults.allowedFolders
-    }
-}
-
-private extension ModelProviderMode {
-    var providerName: String {
-        switch self {
-        case .internalInProcess: "internal-in-process"
-        case .managedRuntime: "managed-local"
-        }
     }
 }
 

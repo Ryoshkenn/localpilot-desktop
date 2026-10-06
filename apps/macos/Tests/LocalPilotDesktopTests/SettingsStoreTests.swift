@@ -3,28 +3,47 @@ import Testing
 @testable import LocalPilotDesktop
 
 struct SettingsStoreTests {
+    private func tempStore() -> SettingsStore {
+        SettingsStore(fileURL: URL.temporaryDirectory.appending(path: "localpilot-settings-\(UUID().uuidString).json"))
+    }
+
     @Test
-    func settingsRoundTripPersistsManagedRuntimeConfiguration() throws {
-        let fileURL = URL.temporaryDirectory.appending(path: "localpilot-settings-\(UUID().uuidString).json")
-        let store = SettingsStore(fileURL: fileURL)
+    func settingsRoundTripPersistsLocalServerSelection() throws {
+        let store = tempStore()
         var settings = AppSettings.defaultValue
-        settings.runtimeExecutableURL = URL(fileURLWithPath: "/usr/local/bin/localpilot-model-runner")
-        settings.plannerModelURL = URL(fileURLWithPath: "/Models/planner.gguf")
-        settings.guardModelURL = URL(fileURLWithPath: "/Models/guard.gguf")
-        settings.runtimePort = 49191
-        settings.plannerModel = "planner.gguf"
-        settings.guardModel = "guard.gguf"
-        settings.unloadModelsAfterRun = true
+        settings.modelProviderMode = .localServer
+        settings.serverBaseURL = "http://127.0.0.1:11434/v1"
+        settings.plannerModel = "qwen3.5-4b"
+        settings.dryRunExecutionOnly = false
 
         try store.save(settings)
         let loaded = try store.load()
 
-        #expect(loaded.runtimeExecutableURL.path == "/usr/local/bin/localpilot-model-runner")
-        #expect(loaded.plannerModelURL.path == "/Models/planner.gguf")
-        #expect(loaded.guardModelURL.path == "/Models/guard.gguf")
-        #expect(loaded.runtimePort == 49191)
-        #expect(loaded.plannerModel == "planner.gguf")
-        #expect(loaded.guardModel == "guard.gguf")
-        #expect(loaded.unloadModelsAfterRun == true)
+        #expect(loaded == settings)
+        #expect(loaded.serverURL?.port == 11434)
+        #expect(loaded.activeModelLabel == "qwen3.5-4b")
+    }
+
+    @Test
+    func oldSettingsFilesStillLoad() throws {
+        let store = tempStore()
+        // Shape written by earlier versions, including the removed managed runtime.
+        let legacy = #"{"modelProviderMode":"managed_runtime","useGuardModel":true,"runtimePort":49191,"plannerModel":"planner.gguf","temperature":0.3}"#
+        try Data(legacy.utf8).write(to: store.fileURL)
+
+        let loaded = try store.load()
+
+        #expect(loaded.modelProviderMode == .builtIn)
+        #expect(loaded.temperature == 0.3)
+        #expect(loaded.serverBaseURL == AppSettings.defaultServerURL)
+    }
+
+    @Test
+    func invalidServerAddressHasNoURL() {
+        var settings = AppSettings.defaultValue
+        settings.serverBaseURL = "not a url"
+        #expect(settings.serverURL == nil)
+        settings.serverBaseURL = "ftp://127.0.0.1/v1"
+        #expect(settings.serverURL == nil)
     }
 }

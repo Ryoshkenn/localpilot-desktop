@@ -145,5 +145,23 @@ Current progress
   the orchestrator gates each action (policy + guard), executes one at a time,
   re-observes between steps, and aborts/re-plans on failure while keeping
   Stop/Pause responsive between every action.
+- [x] Audit pass (2026-09-26): fixed the build (kAXLinkRole does not exist),
+  the dry-run toggle not reaching the executor, the executor staying disabled
+  after the first Stop, pause during planning/guard review leaving the loop
+  dead, stale runs overwriting newer state, continue instructions never
+  reaching the planner, shell injection through switch_app, terminal command
+  pipe deadlock and missing timeout, unsupported keys reported as pressed,
+  and the full-screen overlay intercepting the agent's own clicks. Added a
+  one-time retry on invalid planner JSON.
+- [x] Custom UI: dark design system, step cards, inline approvals, run
+  inspector, Agent Mode HUD and AI cursor, History, Activity Log, live
+  Permissions, and reworked Settings.
+- [x] Guard model removed (2026-09-26). Deterministic policy plus user
+  approval is the safety layer while models are evaluated.
+- [x] Local model servers: OpenAI-compatible provider with automatic discovery
+  of LM Studio, Ollama, llama-server, mlx_lm.server, vLLM, and Jan, replacing
+  the managed runtime (which required a custom endpoint no server provided).
+- [ ] In-app MLX inference for Qwen3.5-4B and Holo-3.1-4B.
+- [ ] Evaluation harness comparing models with harness features toggled.
 - [ ] A general embedded local ML backend that can reason over arbitrary screen
   tasks is still not implemented.

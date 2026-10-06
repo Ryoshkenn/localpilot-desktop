@@ -66,11 +66,6 @@ The default context budget is large (`AppSettings.maximumContextWindowSize`,
 131072) so capable local models can use their full window, while compaction keeps
 the actual payload small enough for small-window models.
 
-Guard review is now tiered and concurrent (`TieredGuard`): low-risk,
-policy-allowed actions are allowed instantly while the model guard runs as a
-background audit; risky actions await the model guard with a timeout and fail
-**closed** on timeout or model failure.
-
 Disk persistence (`state.json`, `recent_steps.jsonl`, `compacted_history.md`,
 `approvals.jsonl`, `logs.jsonl`) and natural-language summarization via a model
 remain for a later milestone.
